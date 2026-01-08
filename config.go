@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/zero-day-ai/sdk/agent"
@@ -19,6 +20,9 @@ const (
 
 	// ModeFrameworkOnly runs only Framework tests (Requirements 17-31)
 	ModeFrameworkOnly ExecutionMode = "framework"
+
+	// ModeNetworkRecon runs network reconnaissance module
+	ModeNetworkRecon ExecutionMode = "network-recon"
 
 	// ModeSingleTest runs specific test modules by name
 	ModeSingleTest ExecutionMode = "single"
@@ -93,18 +97,28 @@ func DefaultConfig() *DebugConfig {
 func ParseConfig(task agent.Task) (*DebugConfig, error) {
 	cfg := DefaultConfig()
 
-	// Parse configuration from task metadata
+	// Auto-detect mode from goal if it contains "network-recon"
+	// This allows: gibson attack --target test-network --agent debug-agent --goal network-recon
+	if strings.Contains(strings.ToLower(task.Goal), "network-recon") {
+		cfg.Mode = ModeNetworkRecon
+	}
+
+	// Parse configuration from task metadata (overrides goal-based detection)
 	if task.Metadata == nil {
+		// Validate and return if no metadata
+		if err := cfg.Validate(); err != nil {
+			return nil, err
+		}
 		return cfg, nil
 	}
 
-	// Parse mode
+	// Parse mode (overrides goal-based detection)
 	if mode, ok := task.Metadata["mode"].(string); ok {
 		switch ExecutionMode(mode) {
-		case ModeFullSuite, ModeSDKOnly, ModeFrameworkOnly, ModeSingleTest:
+		case ModeFullSuite, ModeSDKOnly, ModeFrameworkOnly, ModeNetworkRecon, ModeSingleTest:
 			cfg.Mode = ExecutionMode(mode)
 		default:
-			return nil, fmt.Errorf("invalid execution mode: %s (must be full, sdk, framework, or single)", mode)
+			return nil, fmt.Errorf("invalid execution mode: %s (must be full, sdk, framework, network-recon, or single)", mode)
 		}
 	}
 
@@ -197,7 +211,7 @@ func ParseConfig(task agent.Task) (*DebugConfig, error) {
 func (c *DebugConfig) Validate() error {
 	// Validate mode
 	switch c.Mode {
-	case ModeFullSuite, ModeSDKOnly, ModeFrameworkOnly, ModeSingleTest:
+	case ModeFullSuite, ModeSDKOnly, ModeFrameworkOnly, ModeNetworkRecon, ModeSingleTest:
 		// valid
 	default:
 		return fmt.Errorf("invalid execution mode: %s", c.Mode)
@@ -244,6 +258,11 @@ func (c *DebugConfig) IsSDKEnabled() bool {
 // IsFrameworkEnabled returns true if Framework tests should be run
 func (c *DebugConfig) IsFrameworkEnabled() bool {
 	return c.Mode == ModeFullSuite || c.Mode == ModeFrameworkOnly
+}
+
+// IsNetworkReconEnabled returns true if Network Recon tests should be run
+func (c *DebugConfig) IsNetworkReconEnabled() bool {
+	return c.Mode == ModeNetworkRecon
 }
 
 // ShouldRunTest returns true if the given test should be run

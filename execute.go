@@ -9,6 +9,7 @@ import (
 	"github.com/zero-day-ai/sdk/agent"
 
 	"github.com/zero-day-ai/agents/debug/internal/framework"
+	"github.com/zero-day-ai/agents/debug/internal/network"
 	"github.com/zero-day-ai/agents/debug/internal/runner"
 	"github.com/zero-day-ai/agents/debug/internal/sdk"
 )
@@ -77,6 +78,25 @@ func executeDebugAgent(ctx context.Context, h agent.Harness, task agent.Task) (a
 
 	case ModeFrameworkOnly:
 		suiteResult, err = testRunner.RunCategory(ctx, runner.CategoryFramework)
+
+	case ModeNetworkRecon:
+		suiteResult = runner.NewSuiteResult(string(cfg.Mode))
+		results, testErr := testRunner.RunSingle(ctx, "network-recon")
+		if testErr != nil {
+			logger.Warn("Failed to run network-recon test",
+				"error", testErr,
+			)
+			suiteResult.AddResult(runner.NewErrorResult(
+				"network-recon",
+				"NR-1..NR-8",
+				runner.CategorySDK,
+				0,
+				testErr,
+			))
+		} else {
+			suiteResult.AddResults(results)
+		}
+		suiteResult.Finalize()
 
 	case ModeSingleTest:
 		// For single mode, run each target test and aggregate results
@@ -192,6 +212,11 @@ func registerTestModules(testRunner *runner.Runner, cfg *DebugConfig) error {
 	// Register Framework test modules if enabled
 	if cfg.IsFrameworkEnabled() {
 		testRunner.RegisterModule(framework.NewComprehensiveFrameworkModule())
+	}
+
+	// Register Network Recon module if enabled
+	if cfg.IsNetworkReconEnabled() {
+		testRunner.RegisterModule(network.NewNetworkReconModule())
 	}
 
 	return nil
