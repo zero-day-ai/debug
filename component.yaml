@@ -1,91 +1,19 @@
+# DEBUG - Gibson SDK & Framework Diagnostic Agent
+
+kind: agent
 name: debug-agent
 version: 1.0.0
-type: agent
-description: Comprehensive diagnostic and testing agent for Gibson SDK and Framework
-
-# Author and metadata
+description: Comprehensive diagnostic and testing agent for Gibson SDK and Framework. Validates all SDK and Framework functionality including agents, tools, plugins, memory, GraphRAG, findings, missions, workflows, and observability.
 author: Gibson Team
-repository: https://github.com/zero-day-ai/agents/debug
 license: MIT
 
-# Component capabilities
-capabilities:
-  - prompt_injection
-  - jailbreak
-  - data_extraction
-  - model_manipulation
-  - training_data_inference
-  - adversarial_prompts
-  - system_prompt_discovery
-  - guardrail_bypass
+build:
+  command: go build -o debug-agent .
+  artifacts:
+    - debug-agent
+  workdir: .
 
-# Target types this agent can test
-target_types:
-  - llm_chat
-  - llm_api
-  - http_api
-  - kubernetes
-  - smart_contract
-
-# Runtime requirements
 runtime:
   type: go
-  binary: debug-agent
-  min_go_version: "1.21"
-
-# LLM requirements
-llm_slots:
-  - name: primary
-    description: Primary slot for debug agent reasoning and report generation
-    min_context_window: 8000
-    required: true
-    preferred_models:
-      - claude-3-haiku
-      - gpt-4o-mini
-
-# Commands exposed by this agent
-commands:
-  build:
-    description: Build the debug agent binary
-    cmd: go build -o debug-agent .
-
-  test:
-    description: Run agent tests
-    cmd: go test ./...
-
-  install:
-    description: Install dependencies
-    cmd: go mod download
-
-# Configuration options
-config:
-  mode:
-    type: string
-    description: Execution mode (full, sdk, framework, single)
-    default: full
-
-  verbose:
-    type: boolean
-    description: Enable verbose output
-    default: false
-
-  timeout:
-    type: duration
-    description: Overall execution timeout
-    default: 10m
-
-  output_format:
-    type: string
-    description: Report output format (json, text, both)
-    default: both
-
-# Resource requirements
-resources:
-  memory: 1Gi
-  cpu: "1"
-
-# Health check configuration
-health:
-  enabled: true
-  interval: 30s
-  timeout: 10s
+  entrypoint: ./debug-agent
+  port: 0
