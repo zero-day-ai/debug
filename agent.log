@@ -1,0 +1,15 @@
+Gibson Debug Agent v1.0.0
+
+Starting debug-agent v1.0.0 on port 50051...
+2026/01/08 15:19:37 INFO agent server started component=agent name=debug-agent version=1.0.0 port=50051
+2026/01/08 15:19:37 INFO registered with registry endpoint=localhost:50051 component=agent name=debug-agent
+[DEBUG] Task received: ID=0d5fff71-7375-46b3-9a3a-f175043e424c, Goal="network-recon"
+[DEBUG] Harness nil: false
+2026/01/08 15:19:41 INFO Debug agent execution started agent=debug-agent task_id=0d5fff71-7375-46b3-9a3a-f175043e424c task_id=0d5fff71-7375-46b3-9a3a-f175043e424c goal=network-recon agent=debug-agent version=1.0.0
+2026/01/08 15:19:41 INFO Configuration parsed agent=debug-agent task_id=0d5fff71-7375-46b3-9a3a-f175043e424c mode=network-recon verbose=false timeout=10m0s output_format=both
+2026/01/08 15:19:41 INFO Test modules registered agent=debug-agent task_id=0d5fff71-7375-46b3-9a3a-f175043e424c total_modules=1 sdk_modules=1 framework_modules=0
+2026/01/08 15:19:41 INFO Running single module agent=debug-agent task_id=0d5fff71-7375-46b3-9a3a-f175043e424c module=network-recon
+2026/01/08 15:19:41 INFO Starting ping sweep agent=debug-agent task_id=0d5fff71-7375-46b3-9a3a-f175043e424c subnet=192.168.1.0/24 ip_count=254
+2026/01/08 15:19:41 INFO Single module execution completed agent=debug-agent task_id=0d5fff71-7375-46b3-9a3a-f175043e424c module=network-recon tests=6
+2026/01/08 15:19:41 INFO Test suite execution completed agent=debug-agent task_id=0d5fff71-7375-46b3-9a3a-f175043e424c duration=1.145736ms total_tests=6 passed=1 failed=0 skipped=5 errors=0 overall_status=pass pass_rate=16.67%
+2026/01/08 15:19:41 INFO Debug agent execution finished agent=debug-agent task_id=0d5fff71-7375-46b3-9a3a-f175043e424c status=success total_duration=1.293789ms

@@ -17,6 +17,17 @@ import (
 // executeDebugAgent is the main execution function for the debug agent.
 // It orchestrates the test suite execution based on configuration from the task context.
 func executeDebugAgent(ctx context.Context, h agent.Harness, task agent.Task) (agent.Result, error) {
+	// Debug: print task details
+	fmt.Printf("[DEBUG] Task received: ID=%s, Goal=%q\n", task.ID, task.Goal)
+	fmt.Printf("[DEBUG] Harness nil: %v\n", h == nil)
+
+	if h == nil {
+		return agent.Result{
+			Status: agent.StatusFailed,
+			Output: "Harness is nil - callback endpoint not received",
+		}, nil
+	}
+
 	logger := h.Logger()
 	startTime := time.Now()
 
