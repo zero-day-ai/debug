@@ -101,6 +101,9 @@ func ParseConfig(task agent.Task) (*DebugConfig, error) {
 	// This allows: gibson attack --target test-network --agent debug-agent --goal network-recon
 	if strings.Contains(strings.ToLower(task.Goal), "network-recon") {
 		cfg.Mode = ModeNetworkRecon
+		// Network recon needs more time - scanning 256 IPs with 20 concurrent pings
+		// at 1 second timeout each = ~13 seconds minimum, plus nmap scans
+		cfg.TestTimeout = 5 * time.Minute
 	}
 
 	// Parse configuration from task metadata (overrides goal-based detection)

@@ -9,7 +9,6 @@ import (
 	"github.com/zero-day-ai/sdk/agent"
 
 	"github.com/zero-day-ai/agents/debug/internal/framework"
-	"github.com/zero-day-ai/agents/debug/internal/network"
 	"github.com/zero-day-ai/agents/debug/internal/runner"
 	"github.com/zero-day-ai/agents/debug/internal/sdk"
 )
@@ -225,9 +224,9 @@ func registerTestModules(testRunner *runner.Runner, cfg *DebugConfig) error {
 		testRunner.RegisterModule(framework.NewComprehensiveFrameworkModule())
 	}
 
-	// Register Network Recon module if enabled
+	// Register Network Recon module if enabled (now part of SDK module)
 	if cfg.IsNetworkReconEnabled() {
-		testRunner.RegisterModule(network.NewNetworkReconModule())
+		testRunner.RegisterModule(sdk.NewComprehensiveSDKModule())
 	}
 
 	return nil

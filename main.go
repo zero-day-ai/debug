@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	sdk "github.com/zero-day-ai/sdk"
 	"github.com/zero-day-ai/sdk/agent"
@@ -88,7 +89,8 @@ func main() {
 	// Build serve options
 	opts := []serve.Option{
 		serve.WithPort(port),
-		serve.WithRegistryFromEnv(), // Auto-register with etcd if GIBSON_REGISTRY_ENDPOINTS is set
+		serve.WithGracefulShutdown(5 * time.Second), // Faster shutdown for debug agent
+		serve.WithRegistryFromEnv(),                 // Auto-register with etcd if GIBSON_REGISTRY_ENDPOINTS is set
 	}
 
 	fmt.Printf("Starting debug-agent v%s on port %d...\n", agentVersion, port)
