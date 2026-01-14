@@ -2,30 +2,9 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/zero-day-ai/sdk/agent"
-)
-
-// ExecutionMode defines how the debug agent should run its test suite
-type ExecutionMode string
-
-const (
-	// ModeFullSuite runs all SDK and Framework tests (default)
-	ModeFullSuite ExecutionMode = "full"
-
-	// ModeSDKOnly runs only SDK tests (Requirements 1-16)
-	ModeSDKOnly ExecutionMode = "sdk"
-
-	// ModeFrameworkOnly runs only Framework tests (Requirements 17-31)
-	ModeFrameworkOnly ExecutionMode = "framework"
-
-	// ModeNetworkRecon runs network reconnaissance module
-	ModeNetworkRecon ExecutionMode = "network-recon"
-
-	// ModeSingleTest runs specific test modules by name
-	ModeSingleTest ExecutionMode = "single"
 )
 
 // OutputFormat defines how the report should be formatted
@@ -44,9 +23,6 @@ const (
 
 // DebugConfig holds configuration for debug agent execution
 type DebugConfig struct {
-	// Mode determines which tests to run (full, sdk, framework, single)
-	Mode ExecutionMode
-
 	// Verbose enables detailed output during execution
 	Verbose bool
 
@@ -74,64 +50,94 @@ type DebugConfig struct {
 
 	// SubmitFindings determines whether to submit failed tests as findings
 	SubmitFindings bool
+
+	// Debug Mission Context Fields
+
+	// Component specifies which component to test in health-check mode
+	// Valid values: "graphrag", "tools", "memory", "plugins"
+	Component string
+
+	// Method specifies which LLM method to test in llm-test mode
+	// Valid values: "complete", "structured", "with_tools"
+	Method string
+
+	// Prefix is the prefix to use for test data (e.g., "[DEBUG]")
+	Prefix string
+
+	// Network Reconnaissance Configuration
+
+	// Subnet is the CIDR subnet to scan (optional, auto-discovered if empty)
+	Subnet string
+
+	// Domains is the list of domains to enumerate (optional, from /etc/hosts if empty)
+	Domains []string
+
+	// SkipPhases lists reconnaissance phases to skip
+	// Valid values: "discover", "probe", "scan", "domain", "analyze"
+	SkipPhases []string
+
+	// GenerateIntelligence determines whether to run LLM analysis
+	GenerateIntelligence bool
 }
 
 // DefaultConfig returns a DebugConfig with sensible defaults
 func DefaultConfig() *DebugConfig {
 	return &DebugConfig{
-		Mode:            ModeFullSuite,
-		Verbose:         false,
-		TargetTests:     []string{},
-		Timeout:         10 * time.Minute,  // 10 minutes for full suite
-		CategoryTimeout: 60 * time.Second,  // 60 seconds per category
-		TestTimeout:     10 * time.Second,  // 10 seconds per test
-		SkipCategories:  []string{},
-		SkipTests:       []string{},
-		OutputFormat:    OutputBoth,
-		SubmitFindings:  true,
+		Verbose:              false,
+		TargetTests:          []string{},
+		Timeout:              10 * time.Minute,  // 10 minutes for full suite
+		CategoryTimeout:      60 * time.Second,  // 60 seconds per category
+		TestTimeout:          10 * time.Second,  // 10 seconds per test
+		SkipCategories:       []string{},
+		SkipTests:            []string{},
+		OutputFormat:         OutputBoth,
+		SubmitFindings:       true,
+		Subnet:               "",       // Auto-discover if empty
+		Domains:              []string{}, // Auto-discover from /etc/hosts if empty
+		SkipPhases:           []string{},
+		GenerateIntelligence: true, // Generate LLM analysis by default
 	}
 }
 
 // ParseConfig extracts configuration from the agent task context
-// The task context can contain configuration in the Metadata field
+// The task context can contain configuration in either Context or Metadata field
+// Context is used by workflow YAML, Metadata is used by direct API calls
 func ParseConfig(task agent.Task) (*DebugConfig, error) {
 	cfg := DefaultConfig()
 
-	// Auto-detect mode from goal if it contains "network-recon"
-	// This allows: gibson attack --target test-network --agent debug-agent --goal network-recon
-	if strings.Contains(strings.ToLower(task.Goal), "network-recon") {
-		cfg.Mode = ModeNetworkRecon
-		// Network recon needs more time - scanning 256 IPs with 20 concurrent pings
-		// at 1 second timeout each = ~13 seconds minimum, plus nmap scans
-		cfg.TestTimeout = 5 * time.Minute
+	// DEBUG: Log what we receive
+	fmt.Printf("[DEBUG] ParseConfig: task.ID=%s\n", task.ID)
+	fmt.Printf("[DEBUG] ParseConfig: task.Context keys=%v\n", getConfigMapKeys(task.Context))
+	fmt.Printf("[DEBUG] ParseConfig: task.Metadata keys=%v\n", getConfigMapKeys(task.Metadata))
+	if subnet, ok := task.Context["subnet"]; ok {
+		fmt.Printf("[DEBUG] ParseConfig: task.Context[subnet]=%v\n", subnet)
 	}
 
-	// Parse configuration from task metadata (overrides goal-based detection)
-	if task.Metadata == nil {
-		// Validate and return if no metadata
+	// Merge Context and Metadata - Context takes precedence (from workflow YAML)
+	configMap := make(map[string]any)
+	for k, v := range task.Metadata {
+		configMap[k] = v
+	}
+	for k, v := range task.Context {
+		configMap[k] = v
+	}
+
+	// Parse configuration from merged map
+	if len(configMap) == 0 {
+		// Validate and return if no config
 		if err := cfg.Validate(); err != nil {
 			return nil, err
 		}
 		return cfg, nil
 	}
 
-	// Parse mode (overrides goal-based detection)
-	if mode, ok := task.Metadata["mode"].(string); ok {
-		switch ExecutionMode(mode) {
-		case ModeFullSuite, ModeSDKOnly, ModeFrameworkOnly, ModeNetworkRecon, ModeSingleTest:
-			cfg.Mode = ExecutionMode(mode)
-		default:
-			return nil, fmt.Errorf("invalid execution mode: %s (must be full, sdk, framework, network-recon, or single)", mode)
-		}
-	}
-
 	// Parse verbose flag
-	if verbose, ok := task.Metadata["verbose"].(bool); ok {
+	if verbose, ok := configMap["verbose"].(bool); ok {
 		cfg.Verbose = verbose
 	}
 
 	// Parse target tests for single mode
-	if tests, ok := task.Metadata["tests"].([]interface{}); ok {
+	if tests, ok := configMap["tests"].([]interface{}); ok {
 		cfg.TargetTests = make([]string, 0, len(tests))
 		for _, test := range tests {
 			if testName, ok := test.(string); ok {
@@ -141,7 +147,7 @@ func ParseConfig(task agent.Task) (*DebugConfig, error) {
 	}
 
 	// Parse timeout
-	if timeout, ok := task.Metadata["timeout"].(string); ok {
+	if timeout, ok := configMap["timeout"].(string); ok {
 		if d, err := time.ParseDuration(timeout); err == nil {
 			cfg.Timeout = d
 		} else {
@@ -150,7 +156,7 @@ func ParseConfig(task agent.Task) (*DebugConfig, error) {
 	}
 
 	// Parse category timeout
-	if categoryTimeout, ok := task.Metadata["category_timeout"].(string); ok {
+	if categoryTimeout, ok := configMap["category_timeout"].(string); ok {
 		if d, err := time.ParseDuration(categoryTimeout); err == nil {
 			cfg.CategoryTimeout = d
 		} else {
@@ -159,7 +165,7 @@ func ParseConfig(task agent.Task) (*DebugConfig, error) {
 	}
 
 	// Parse test timeout
-	if testTimeout, ok := task.Metadata["test_timeout"].(string); ok {
+	if testTimeout, ok := configMap["test_timeout"].(string); ok {
 		if d, err := time.ParseDuration(testTimeout); err == nil {
 			cfg.TestTimeout = d
 		} else {
@@ -168,7 +174,7 @@ func ParseConfig(task agent.Task) (*DebugConfig, error) {
 	}
 
 	// Parse skip categories
-	if skipCats, ok := task.Metadata["skip_categories"].([]interface{}); ok {
+	if skipCats, ok := configMap["skip_categories"].([]interface{}); ok {
 		cfg.SkipCategories = make([]string, 0, len(skipCats))
 		for _, cat := range skipCats {
 			if catName, ok := cat.(string); ok {
@@ -178,7 +184,7 @@ func ParseConfig(task agent.Task) (*DebugConfig, error) {
 	}
 
 	// Parse skip tests
-	if skipTests, ok := task.Metadata["skip_tests"].([]interface{}); ok {
+	if skipTests, ok := configMap["skip_tests"].([]interface{}); ok {
 		cfg.SkipTests = make([]string, 0, len(skipTests))
 		for _, test := range skipTests {
 			if testName, ok := test.(string); ok {
@@ -188,7 +194,7 @@ func ParseConfig(task agent.Task) (*DebugConfig, error) {
 	}
 
 	// Parse output format
-	if format, ok := task.Metadata["output_format"].(string); ok {
+	if format, ok := configMap["output_format"].(string); ok {
 		switch OutputFormat(format) {
 		case OutputJSON, OutputText, OutputBoth:
 			cfg.OutputFormat = OutputFormat(format)
@@ -198,8 +204,43 @@ func ParseConfig(task agent.Task) (*DebugConfig, error) {
 	}
 
 	// Parse submit findings flag
-	if submitFindings, ok := task.Metadata["submit_findings"].(bool); ok {
+	if submitFindings, ok := configMap["submit_findings"].(bool); ok {
 		cfg.SubmitFindings = submitFindings
+	}
+
+	// Parse debug mission context fields
+	if component, ok := configMap["component"].(string); ok {
+		cfg.Component = component
+	}
+	if method, ok := configMap["method"].(string); ok {
+		cfg.Method = method
+	}
+	if prefix, ok := configMap["prefix"].(string); ok {
+		cfg.Prefix = prefix
+	}
+
+	// Parse network reconnaissance config fields
+	if subnet, ok := configMap["subnet"].(string); ok {
+		cfg.Subnet = subnet
+	}
+	if domains, ok := configMap["domains"].([]interface{}); ok {
+		cfg.Domains = make([]string, 0, len(domains))
+		for _, domain := range domains {
+			if domainName, ok := domain.(string); ok {
+				cfg.Domains = append(cfg.Domains, domainName)
+			}
+		}
+	}
+	if skipPhases, ok := configMap["skip_phases"].([]interface{}); ok {
+		cfg.SkipPhases = make([]string, 0, len(skipPhases))
+		for _, phase := range skipPhases {
+			if phaseName, ok := phase.(string); ok {
+				cfg.SkipPhases = append(cfg.SkipPhases, phaseName)
+			}
+		}
+	}
+	if generateIntel, ok := configMap["generate_intelligence"].(bool); ok {
+		cfg.GenerateIntelligence = generateIntel
 	}
 
 	// Validate configuration
@@ -212,19 +253,6 @@ func ParseConfig(task agent.Task) (*DebugConfig, error) {
 
 // Validate checks if the configuration is valid
 func (c *DebugConfig) Validate() error {
-	// Validate mode
-	switch c.Mode {
-	case ModeFullSuite, ModeSDKOnly, ModeFrameworkOnly, ModeNetworkRecon, ModeSingleTest:
-		// valid
-	default:
-		return fmt.Errorf("invalid execution mode: %s", c.Mode)
-	}
-
-	// Validate single mode has target tests
-	if c.Mode == ModeSingleTest && len(c.TargetTests) == 0 {
-		return fmt.Errorf("single mode requires target_tests to be specified")
-	}
-
 	// Validate timeouts
 	if c.Timeout <= 0 {
 		return fmt.Errorf("timeout must be positive, got %v", c.Timeout)
@@ -244,28 +272,39 @@ func (c *DebugConfig) Validate() error {
 		return fmt.Errorf("invalid output format: %s", c.OutputFormat)
 	}
 
+	// Validate skip_phases contains only valid phase names
+	validPhases := map[string]bool{
+		"discover": true,
+		"probe":    true,
+		"scan":     true,
+		"domain":   true,
+		"analyze":  true,
+	}
+	for _, phase := range c.SkipPhases {
+		if !validPhases[phase] {
+			return fmt.Errorf("invalid phase name in skip_phases: %s (must be: discover, probe, scan, domain, or analyze)", phase)
+		}
+	}
+
 	return nil
 }
 
 // String returns a human-readable representation of the configuration
 func (c *DebugConfig) String() string {
-	return fmt.Sprintf("DebugConfig{mode=%s, verbose=%v, timeout=%v, output=%s}",
-		c.Mode, c.Verbose, c.Timeout, c.OutputFormat)
+	return fmt.Sprintf("DebugConfig{verbose=%v, timeout=%v, output=%s}",
+		c.Verbose, c.Timeout, c.OutputFormat)
 }
 
-// IsSDKEnabled returns true if SDK tests should be run
-func (c *DebugConfig) IsSDKEnabled() bool {
-	return c.Mode == ModeFullSuite || c.Mode == ModeSDKOnly
-}
-
-// IsFrameworkEnabled returns true if Framework tests should be run
-func (c *DebugConfig) IsFrameworkEnabled() bool {
-	return c.Mode == ModeFullSuite || c.Mode == ModeFrameworkOnly
-}
-
-// IsNetworkReconEnabled returns true if Network Recon tests should be run
-func (c *DebugConfig) IsNetworkReconEnabled() bool {
-	return c.Mode == ModeNetworkRecon
+// ShouldRunPhase returns true if the given reconnaissance phase should be run
+func (c *DebugConfig) ShouldRunPhase(phase string) bool {
+	// Check if phase is explicitly skipped
+	for _, skip := range c.SkipPhases {
+		if skip == phase {
+			return false
+		}
+	}
+	// All phases are enabled by default unless explicitly skipped
+	return true
 }
 
 // ShouldRunTest returns true if the given test should be run
@@ -277,8 +316,8 @@ func (c *DebugConfig) ShouldRunTest(testName string) bool {
 		}
 	}
 
-	// In single mode, only run target tests
-	if c.Mode == ModeSingleTest {
+	// If target tests are specified, only run those
+	if len(c.TargetTests) > 0 {
 		for _, target := range c.TargetTests {
 			if target == testName {
 				return true
@@ -300,4 +339,13 @@ func (c *DebugConfig) ShouldRunCategory(category string) bool {
 	}
 
 	return true
+}
+
+// getConfigMapKeys returns the keys of a map[string]any for debugging
+func getConfigMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }

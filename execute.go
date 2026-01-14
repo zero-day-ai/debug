@@ -16,9 +16,6 @@ import (
 // executeDebugAgent is the main execution function for the debug agent.
 // It orchestrates the test suite execution based on configuration from the task context.
 func executeDebugAgent(ctx context.Context, h agent.Harness, task agent.Task) (agent.Result, error) {
-	// Debug: print task details
-	fmt.Printf("[DEBUG] Task received: ID=%s, Goal=%q\n", task.ID, task.Goal)
-	fmt.Printf("[DEBUG] Harness nil: %v\n", h == nil)
 
 	if h == nil {
 		return agent.Result{
@@ -32,7 +29,6 @@ func executeDebugAgent(ctx context.Context, h agent.Harness, task agent.Task) (a
 
 	logger.Info("Debug agent execution started",
 		"task_id", task.ID,
-		"goal", task.Goal,
 		"agent", agentName,
 		"version", agentVersion,
 	)
@@ -50,16 +46,15 @@ func executeDebugAgent(ctx context.Context, h agent.Harness, task agent.Task) (a
 	}
 
 	logger.Info("Configuration parsed",
-		"mode", cfg.Mode,
 		"verbose", cfg.Verbose,
 		"timeout", cfg.Timeout,
 		"output_format", cfg.OutputFormat,
 	)
 
 	// Create the test runner
-	testRunner := runner.NewRunner(h, string(cfg.Mode), cfg.Timeout, cfg.TestTimeout)
+	testRunner := runner.NewRunner(h, cfg.Timeout, cfg.TestTimeout)
 
-	// Register test modules based on mode
+	// Register test modules
 	if err := registerTestModules(testRunner, cfg); err != nil {
 		logger.Error("Failed to register test modules",
 			"error", err,
@@ -76,68 +71,8 @@ func executeDebugAgent(ctx context.Context, h agent.Harness, task agent.Task) (a
 		"framework_modules", len(testRunner.GetModulesByCategory(runner.CategoryFramework)),
 	)
 
-	// Execute the test suite based on mode
-	var suiteResult *runner.SuiteResult
-
-	switch cfg.Mode {
-	case ModeFullSuite:
-		suiteResult, err = testRunner.Run(ctx)
-
-	case ModeSDKOnly:
-		suiteResult, err = testRunner.RunCategory(ctx, runner.CategorySDK)
-
-	case ModeFrameworkOnly:
-		suiteResult, err = testRunner.RunCategory(ctx, runner.CategoryFramework)
-
-	case ModeNetworkRecon:
-		suiteResult = runner.NewSuiteResult(string(cfg.Mode))
-		results, testErr := testRunner.RunSingle(ctx, "network-recon")
-		if testErr != nil {
-			logger.Warn("Failed to run network-recon test",
-				"error", testErr,
-			)
-			suiteResult.AddResult(runner.NewErrorResult(
-				"network-recon",
-				"NR-1..NR-8",
-				runner.CategorySDK,
-				0,
-				testErr,
-			))
-		} else {
-			suiteResult.AddResults(results)
-		}
-		suiteResult.Finalize()
-
-	case ModeSingleTest:
-		// For single mode, run each target test and aggregate results
-		suiteResult = runner.NewSuiteResult(string(cfg.Mode))
-		for _, testName := range cfg.TargetTests {
-			results, testErr := testRunner.RunSingle(ctx, testName)
-			if testErr != nil {
-				logger.Warn("Failed to run single test",
-					"test", testName,
-					"error", testErr,
-				)
-				// Add error result for the failed test
-				suiteResult.AddResult(runner.NewErrorResult(
-					testName,
-					"unknown",
-					runner.CategorySDK,
-					0,
-					testErr,
-				))
-			} else {
-				suiteResult.AddResults(results)
-			}
-		}
-		suiteResult.Finalize()
-
-	default:
-		return agent.Result{
-			Status: agent.StatusFailed,
-			Output: fmt.Sprintf("Unknown execution mode: %s", cfg.Mode),
-		}, nil
-	}
+	// Execute the full test suite
+	suiteResult, err := testRunner.Run(ctx)
 
 	if err != nil {
 		logger.Error("Test suite execution failed",
@@ -175,7 +110,6 @@ func executeDebugAgent(ctx context.Context, h agent.Harness, task agent.Task) (a
 
 	// Build result metadata
 	metadata := map[string]any{
-		"mode":           cfg.Mode,
 		"duration":       suiteResult.Duration().String(),
 		"total_tests":    suiteResult.TotalTests(),
 		"passed":         suiteResult.TotalPassed(),
@@ -212,22 +146,13 @@ func executeDebugAgent(ctx context.Context, h agent.Harness, task agent.Task) (a
 	}, nil
 }
 
-// registerTestModules registers test modules with the runner based on configuration
+// registerTestModules registers test modules with the runner
 func registerTestModules(testRunner *runner.Runner, cfg *DebugConfig) error {
-	// Register SDK test modules if enabled
-	if cfg.IsSDKEnabled() {
-		testRunner.RegisterModule(sdk.NewComprehensiveSDKModule())
-	}
+	// Register SDK test modules with subnet from config
+	testRunner.RegisterModule(sdk.NewComprehensiveSDKModule(cfg.Subnet))
 
-	// Register Framework test modules if enabled
-	if cfg.IsFrameworkEnabled() {
-		testRunner.RegisterModule(framework.NewComprehensiveFrameworkModule())
-	}
-
-	// Register Network Recon module if enabled (now part of SDK module)
-	if cfg.IsNetworkReconEnabled() {
-		testRunner.RegisterModule(sdk.NewComprehensiveSDKModule())
-	}
+	// Register Framework test modules
+	testRunner.RegisterModule(framework.NewComprehensiveFrameworkModule())
 
 	return nil
 }
@@ -256,7 +181,6 @@ func formatOutput(suiteResult *runner.SuiteResult, cfg *DebugConfig) string {
 func formatTextOutput(suiteResult *runner.SuiteResult) string {
 	output := fmt.Sprintf(`
 === Debug Agent Test Report ===
-Mode: %s
 Duration: %s
 Status: %s
 
@@ -281,7 +205,6 @@ Failed: %d
 Skipped: %d
 Errors: %d
 `,
-		suiteResult.Mode,
 		suiteResult.Duration(),
 		suiteResult.OverallStatus,
 		suiteResult.TotalTests(),
@@ -327,7 +250,6 @@ Errors: %d
 func formatJSONOutput(suiteResult *runner.SuiteResult) string {
 	// Create a simplified structure for JSON output
 	jsonData := map[string]any{
-		"mode":           suiteResult.Mode,
 		"start_time":     suiteResult.StartTime,
 		"end_time":       suiteResult.EndTime,
 		"duration":       suiteResult.Duration().String(),
