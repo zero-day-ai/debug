@@ -48,14 +48,17 @@ type PortResult struct {
 }
 
 // HostAnalysis contains per-host LLM analysis
+// This struct is used with structured output to get type-safe JSON responses
 type HostAnalysis struct {
-	IP              string   `json:"ip"`
-	Hostname        string   `json:"hostname,omitempty"`
-	Purpose         string   `json:"purpose"`         // What this machine likely does
+	Purpose         string   `json:"purpose"`          // What this machine likely does
 	OperatingSystem string   `json:"operating_system"` // Inferred OS
 	RiskLevel       string   `json:"risk_level"`       // low, medium, high, critical
 	Vulnerabilities []string `json:"vulnerabilities"`  // Potential vulnerabilities
 	Recommendations []string `json:"recommendations"`  // Security recommendations
+
+	// These fields are set after parsing, not part of LLM response
+	IP       string `json:"-"`
+	Hostname string `json:"-"`
 }
 
 // PingResult represents the result of pinging a single IP
@@ -83,16 +86,19 @@ type NmapToolOutput struct {
 // ComprehensiveSDKModule tests all SDK functionality in one module
 type ComprehensiveSDKModule struct {
 	BaseModule
+	configSubnet string // Subnet passed from config (task.Context["subnet"])
 }
 
 // NewComprehensiveSDKModule creates the comprehensive SDK test module
-func NewComprehensiveSDKModule() *ComprehensiveSDKModule {
+// subnet parameter allows passing subnet from task context when target.Connection doesn't have it
+func NewComprehensiveSDKModule(subnet string) *ComprehensiveSDKModule {
 	return &ComprehensiveSDKModule{
 		BaseModule: NewBaseModule(
 			"network-recon",
 			"Comprehensive network reconnaissance: real ping sweep, nmap scanning, GraphRAG storage, per-host LLM analysis",
 			"NR-1..NR-8",
 		),
+		configSubnet: subnet,
 	}
 }
 
@@ -148,39 +154,51 @@ func (m *ComprehensiveSDKModule) parseSubnet(ctx context.Context, h agent.Harnes
 
 	h.Logger().Info("Phase 1: Parsing subnet from target configuration")
 
-	target := h.Target()
-	if target.ID == "" {
-		return "", []runner.TestResult{
-			runner.NewSkipResult(testName, reqID, runner.CategorySDK,
-				"Target info not available"),
+	var subnet string
+
+	// First, check if subnet was passed from config (task.Context["subnet"])
+	if m.configSubnet != "" {
+		subnet = m.configSubnet
+		h.Logger().Info("Using subnet from task context",
+			"subnet", subnet,
+		)
+	} else {
+		// Fall back to target.Connection
+		target := h.Target()
+		if target.ID == "" {
+			return "", []runner.TestResult{
+				runner.NewSkipResult(testName, reqID, runner.CategorySDK,
+					"Target info not available and no subnet in task context"),
+			}
 		}
-	}
 
-	h.Logger().Info("Target info retrieved",
-		"target_id", target.ID,
-		"target_name", target.Name,
-		"connection_keys", getMapKeys(target.Connection),
-	)
+		h.Logger().Info("Target info retrieved",
+			"target_id", target.ID,
+			"target_name", target.Name,
+			"connection_keys", getMapKeys(target.Connection),
+		)
 
-	// Check if subnet exists in connection config (support both "subnet" and "cidr" keys)
-	subnetRaw, ok := target.Connection["subnet"]
-	if !ok {
-		subnetRaw, ok = target.Connection["cidr"]
-	}
-	if !ok {
-		return "", []runner.TestResult{
-			runner.NewSkipResult(testName, reqID, runner.CategorySDK,
-				"Target connection does not contain 'subnet' or 'cidr' field. Add subnet/cidr to target connection config."),
+		// Check if subnet exists in connection config (support both "subnet" and "cidr" keys)
+		subnetRaw, ok := target.Connection["subnet"]
+		if !ok {
+			subnetRaw, ok = target.Connection["cidr"]
 		}
-	}
+		if !ok {
+			return "", []runner.TestResult{
+				runner.NewSkipResult(testName, reqID, runner.CategorySDK,
+					"No subnet in task context and target connection does not contain 'subnet' or 'cidr' field."),
+			}
+		}
 
-	// Convert to string
-	subnet, ok := subnetRaw.(string)
-	if !ok {
-		return "", []runner.TestResult{
-			runner.NewFailResult(testName, reqID, runner.CategorySDK, 0,
-				fmt.Sprintf("Subnet field is not a string, got type %T", subnetRaw),
-				fmt.Errorf("invalid subnet type")),
+		// Convert to string
+		var strOk bool
+		subnet, strOk = subnetRaw.(string)
+		if !strOk {
+			return "", []runner.TestResult{
+				runner.NewFailResult(testName, reqID, runner.CategorySDK, 0,
+					fmt.Sprintf("Subnet field is not a string, got type %T", subnetRaw),
+					fmt.Errorf("invalid subnet type")),
+			}
 		}
 	}
 
@@ -354,7 +372,7 @@ func (m *ComprehensiveSDKModule) nmapPhase(ctx context.Context, h agent.Harness,
 				"scan_type":         "connect",
 				"ports":             "1-1024", // All well-known ports
 				"timing":            4,        // Aggressive timing
-				"timeout":           "5m",     // 5 minute timeout per host
+				"timeout":           300,      // 5 minute timeout per host (seconds)
 			},
 		}
 		h.Logger().Info("Queued scan for host", "ip", host)
@@ -529,7 +547,7 @@ func (m *ComprehensiveSDKModule) graphPhase(ctx context.Context, h agent.Harness
 	reqID := "NR-5"
 	startTime := time.Now()
 
-	h.Logger().Info("Phase 5: Storing scan data in Neo4j with relationships")
+	h.Logger().Info("Phase 5: Storing scan data in Neo4j with taxonomy-compliant nodes")
 
 	// Check GraphRAG health
 	health := h.GraphRAGHealth(ctx)
@@ -550,26 +568,25 @@ func (m *ComprehensiveSDKModule) graphPhase(ctx context.Context, h agent.Harness
 	}
 
 	attackID := mission.ID
-	h.Logger().Info("Building graph batch",
+	scanStartTime := time.Now()
+	h.Logger().Info("Building taxonomy-compliant graph batch",
 		"attack_id", attackID,
 		"subnet", subnet,
 		"live_hosts", len(liveHosts),
 	)
 
-	// Build nodes and relationships
+	// Build nodes and relationships using taxonomy builders
 	nodes := []graphrag.GraphNode{}
 	relationships := []graphrag.Relationship{}
 
-	// 1. Attack node (root)
-	attackNode := graphrag.NewGraphNode("Attack").
-		WithID(fmt.Sprintf("attack-%s", attackID)).
-		WithProperty("attack_id", attackID).
-		WithProperty("timestamp", time.Now()).
-		WithProperty("agent", "debug-agent").
-		WithContent(fmt.Sprintf("Network reconnaissance attack %s", attackID))
-	nodes = append(nodes, *attackNode)
+	// 1. Agent run node (replaces "attack" - taxonomy-compliant)
+	agentRunNode := buildAgentRunNode(attackID, "debug-agent", scanStartTime)
+	nodes = append(nodes, *agentRunNode)
 
-	// 2. NetworkScan node
+	// Link agent_run to mission: agent_run PART_OF mission
+	relationships = append(relationships, *buildPartOfRel(agentRunNode.ID, mission.ID))
+
+	// 2. Tool execution node (replaces "network_scan" - taxonomy-compliant)
 	totalPorts := 0
 	if scan != nil {
 		for _, host := range scan.Hosts {
@@ -580,60 +597,47 @@ func (m *ComprehensiveSDKModule) graphPhase(ctx context.Context, h agent.Harness
 			}
 		}
 	}
-	scanNode := graphrag.NewGraphNode("NetworkScan").
-		WithID(fmt.Sprintf("scan-%s", attackID)).
-		WithProperty("attack_id", attackID).
-		WithProperty("subnet", subnet).
-		WithProperty("timestamp", time.Now()).
+	scanNode := buildToolExecutionNode(attackID, "nmap", subnet, scanStartTime)
+	// Add scan-specific properties
+	scanNode.WithProperty("subnet", subnet).
 		WithProperty("host_count", len(liveHosts)).
-		WithProperty("port_count", totalPorts).
-		WithContent(fmt.Sprintf("Scan of %s: %d hosts, %d ports", subnet, len(liveHosts), totalPorts))
+		WithProperty("port_count", totalPorts)
 	nodes = append(nodes, *scanNode)
 
-	// Attack -> PERFORMED -> Scan
-	relationships = append(relationships, *graphrag.NewRelationship(attackNode.ID, scanNode.ID, "PERFORMED"))
+	// Tool execution EXECUTED_BY agent run
+	relationships = append(relationships, *buildExecutedByRel(scanNode.ID, agentRunNode.ID))
 
-	// 3. Host nodes and Port nodes
+	// 3. Host nodes and Port nodes using taxonomy builders
 	if scan != nil {
 		for _, host := range scan.Hosts {
-			hostNode := graphrag.NewGraphNode("Host").
-				WithID(fmt.Sprintf("host-%s-%s", attackID, host.IP)).
-				WithProperty("attack_id", attackID).
-				WithProperty("ip", host.IP).
-				WithProperty("hostname", host.Hostname).
-				WithProperty("status", host.Status).
-				WithContent(fmt.Sprintf("Host %s (%s)", host.IP, host.Status))
+			// Use taxonomy-compliant host builder
+			hostNode := buildHostNode(attackID, host.IP, host.Hostname, host.Status)
 			nodes = append(nodes, *hostNode)
 
-			// Scan -> DISCOVERED -> Host
-			relationships = append(relationships, *graphrag.NewRelationship(scanNode.ID, hostNode.ID, "DISCOVERED"))
+			// Agent run DISCOVERED host (not scan -> host)
+			relationships = append(relationships, *buildDiscoveredRel(agentRunNode.ID, hostNode.ID))
 
-			h.Logger().Info("Created host node",
+			h.Logger().Info("Created taxonomy-compliant host node",
 				"host_id", hostNode.ID,
 				"ip", host.IP,
+				"node_type", graphrag.NodeTypeHost,
 			)
 
-			// Port nodes
+			// Port nodes using taxonomy builder
 			for _, port := range host.Ports {
 				if port.State == "open" {
-					portNode := graphrag.NewGraphNode("Port").
-						WithID(fmt.Sprintf("port-%s-%s-%d", attackID, host.IP, port.Port)).
-						WithProperty("attack_id", attackID).
-						WithProperty("port", port.Port).
-						WithProperty("protocol", port.Protocol).
-						WithProperty("service", port.Service).
-						WithProperty("version", port.Version).
-						WithProperty("product", port.Product).
-						WithContent(fmt.Sprintf("%d/%s: %s %s", port.Port, port.Protocol, port.Service, port.Version))
+					// Use taxonomy-compliant port builder (uses "number" property)
+					portNode := buildPortNode(attackID, host.IP, port.Port, port.Protocol, port.Service, port.Version, port.Product)
 					nodes = append(nodes, *portNode)
 
-					// Host -> HAS_PORT -> Port
-					relationships = append(relationships, *graphrag.NewRelationship(hostNode.ID, portNode.ID, "HAS_PORT"))
+					// Host HAS_PORT port (taxonomy relationship)
+					relationships = append(relationships, *buildHasPortRel(hostNode.ID, portNode.ID))
 
-					h.Logger().Info("Created port node",
+					h.Logger().Info("Created taxonomy-compliant port node",
 						"port_id", portNode.ID,
-						"port", port.Port,
+						"port_number", port.Port,
 						"service", port.Service,
+						"node_type", graphrag.NodeTypePort,
 					)
 				}
 			}
@@ -646,9 +650,10 @@ func (m *ComprehensiveSDKModule) graphPhase(ctx context.Context, h agent.Harness
 		Relationships: relationships,
 	}
 
-	h.Logger().Info("Storing graph batch",
+	h.Logger().Info("Storing taxonomy-compliant graph batch",
 		"nodes", len(nodes),
 		"relationships", len(relationships),
+		"node_types", []string{graphrag.NodeTypeAgentRun, graphrag.NodeTypeToolExecution, graphrag.NodeTypeHost, graphrag.NodeTypePort},
 	)
 
 	nodeIDs, err := h.StoreGraphBatch(ctx, *batch)
@@ -660,7 +665,7 @@ func (m *ComprehensiveSDKModule) graphPhase(ctx context.Context, h agent.Harness
 	}
 
 	duration := time.Since(startTime)
-	h.Logger().Info("Graph storage completed",
+	h.Logger().Info("Taxonomy-compliant graph storage completed",
 		"duration", duration,
 		"nodes_created", len(nodeIDs),
 		"relationships_created", len(relationships),
@@ -668,7 +673,7 @@ func (m *ComprehensiveSDKModule) graphPhase(ctx context.Context, h agent.Harness
 
 	return []runner.TestResult{
 		runner.NewPassResult(testName, reqID, runner.CategorySDK, duration,
-			fmt.Sprintf("Graph: %d nodes, %d relationships stored", len(nodeIDs), len(relationships))),
+			fmt.Sprintf("Graph: %d taxonomy-compliant nodes, %d relationships stored", len(nodeIDs), len(relationships))),
 	}
 }
 
@@ -699,16 +704,19 @@ func (m *ComprehensiveSDKModule) llmPhase(ctx context.Context, h agent.Harness, 
 			continue
 		}
 
-		h.Logger().Info("Analyzing host with Claude",
+		h.Logger().Info("Analyzing host with Claude (using provider-native structured output)",
 			"ip", host.IP,
 			"hostname", host.Hostname,
 			"port_count", len(host.Ports),
 		)
 
-		// Build per-host analysis prompt
+		// Build per-host analysis prompt - natural language, no JSON instructions
 		prompt := buildHostAnalysisPrompt(host)
 
-		// Call Claude via LLM harness
+		// Call Claude via CompleteStructured - uses provider's native structured output
+		// For Anthropic: uses tool_use pattern (schema becomes a tool, response is tool input)
+		// For OpenAI: uses response_format with json_schema
+		// The prompt is natural language; structured output is enforced by the provider
 		messages := []llm.Message{
 			{
 				Role:    llm.RoleUser,
@@ -716,30 +724,34 @@ func (m *ComprehensiveSDKModule) llmPhase(ctx context.Context, h agent.Harness, 
 			},
 		}
 
-		response, err := h.Complete(ctx, "primary", messages)
+		result, err := h.CompleteStructured(ctx, "primary", messages, HostAnalysis{})
 		if err != nil {
-			h.Logger().Warn("LLM analysis failed for host",
+			h.Logger().Warn("Structured LLM analysis failed for host",
 				"ip", host.IP,
 				"error", err,
 			)
 			continue
 		}
 
-		h.Logger().Info("Claude response received",
+		// Type assert the result to *HostAnalysis
+		analysis, ok := result.(*HostAnalysis)
+		if !ok {
+			h.Logger().Warn("Unexpected response type from CompleteStructured",
+				"ip", host.IP,
+				"type", fmt.Sprintf("%T", result),
+			)
+			continue
+		}
+
+		// Set metadata fields (not part of LLM response)
+		analysis.IP = host.IP
+		analysis.Hostname = host.Hostname
+
+		h.Logger().Info("Claude structured response received",
 			"ip", host.IP,
-			"response_length", len(response.Content),
-			"tokens_used", response.Usage.TotalTokens,
+			"purpose", analysis.Purpose,
+			"risk", analysis.RiskLevel,
 		)
-
-		// Parse LLM response
-		analysis, err := parseHostAnalysisResponse(response.Content, host.IP, host.Hostname)
-		if err != nil {
-			h.Logger().Warn("Failed to parse LLM response",
-				"ip", host.IP,
-				"error", err,
-			)
-			continue
-		}
 
 		hostAnalyses = append(hostAnalyses, analysis)
 		analysisCount++
@@ -765,8 +777,11 @@ func (m *ComprehensiveSDKModule) llmPhase(ctx context.Context, h agent.Harness, 
 }
 
 // ============================================================================
-// Phase 7: Store analyses in graph
+// Phase 7: Store analyses in graph (taxonomy-compliant approach)
 // ============================================================================
+// Instead of creating non-canonical "host_analysis" nodes, we store the LLM
+// analysis data as properties directly on the existing host nodes.
+// This keeps the graph structure taxonomy-compliant while preserving all data.
 
 func (m *ComprehensiveSDKModule) storeAnalysesInGraph(ctx context.Context, h agent.Harness, analyses []*HostAnalysis) []runner.TestResult {
 	testName := "Store Analyses in Graph"
@@ -780,7 +795,7 @@ func (m *ComprehensiveSDKModule) storeAnalysesInGraph(ctx context.Context, h age
 		}
 	}
 
-	h.Logger().Info("Phase 7: Storing LLM analyses in graph")
+	h.Logger().Info("Phase 7: Storing LLM analyses as host properties (taxonomy-compliant)")
 
 	mission := h.Mission()
 	if mission.ID == "" {
@@ -792,42 +807,46 @@ func (m *ComprehensiveSDKModule) storeAnalysesInGraph(ctx context.Context, h age
 
 	attackID := mission.ID
 	nodes := []graphrag.GraphNode{}
-	relationships := []graphrag.Relationship{}
 
+	// Instead of creating "host_analysis" nodes (not in taxonomy),
+	// we update the existing host nodes with analysis properties
 	for _, analysis := range analyses {
-		// Create analysis node
-		analysisNode := graphrag.NewGraphNode("HostAnalysis").
-			WithID(fmt.Sprintf("analysis-%s-%s", attackID, analysis.IP)).
-			WithProperty("attack_id", attackID).
-			WithProperty("ip", analysis.IP).
-			WithProperty("purpose", analysis.Purpose).
-			WithProperty("operating_system", analysis.OperatingSystem).
-			WithProperty("risk_level", analysis.RiskLevel).
-			WithProperty("vulnerabilities", analysis.Vulnerabilities).
-			WithProperty("recommendations", analysis.Recommendations).
-			WithContent(fmt.Sprintf("%s: %s (%s) - Risk: %s", analysis.IP, analysis.Purpose, analysis.OperatingSystem, analysis.RiskLevel))
-		nodes = append(nodes, *analysisNode)
+		// Build updated host node with LLM analysis as properties
+		hostNode := buildHostNode(attackID, analysis.IP, analysis.Hostname, "analyzed")
 
-		// Link to host node: Host -> ANALYZED_AS -> HostAnalysis
-		hostID := fmt.Sprintf("host-%s-%s", attackID, analysis.IP)
-		relationships = append(relationships, *graphrag.NewRelationship(hostID, analysisNode.ID, "ANALYZED_AS"))
+		// Add LLM analysis data as additional properties on the host node
+		hostNode.WithProperty("llm_purpose", analysis.Purpose).
+			WithProperty("llm_os", analysis.OperatingSystem).
+			WithProperty("llm_risk_level", analysis.RiskLevel).
+			WithProperty("llm_vulnerabilities", analysis.Vulnerabilities).
+			WithProperty("llm_recommendations", analysis.Recommendations).
+			WithProperty("analyzed_at", time.Now())
 
-		h.Logger().Info("Created analysis node",
-			"analysis_id", analysisNode.ID,
+		// Update content to include analysis summary
+		hostNode.WithContent(fmt.Sprintf("Host %s: %s (%s) - Risk: %s",
+			analysis.IP, analysis.Purpose, analysis.OperatingSystem, analysis.RiskLevel))
+
+		nodes = append(nodes, *hostNode)
+
+		h.Logger().Info("Updated host node with LLM analysis properties",
+			"host_id", hostNode.ID,
+			"ip", analysis.IP,
 			"purpose", analysis.Purpose,
+			"risk_level", analysis.RiskLevel,
 		)
 	}
 
+	// Store batch (will merge with existing host nodes in Neo4j)
 	batch := &graphrag.Batch{
 		Nodes:         nodes,
-		Relationships: relationships,
+		Relationships: []graphrag.Relationship{}, // No new relationships needed
 	}
 
 	nodeIDs, err := h.StoreGraphBatch(ctx, *batch)
 	if err != nil {
 		return []runner.TestResult{
 			runner.NewFailResult(testName, reqID, runner.CategorySDK, time.Since(startTime),
-				fmt.Sprintf("Failed to store analysis nodes: %v", err), err),
+				fmt.Sprintf("Failed to update host nodes with analyses: %v", err), err),
 		}
 	}
 
@@ -840,14 +859,14 @@ func (m *ComprehensiveSDKModule) storeAnalysesInGraph(ctx context.Context, h age
 	}
 
 	duration := time.Since(startTime)
-	h.Logger().Info("Analysis storage completed",
-		"nodes_created", len(nodeIDs),
-		"relationships_created", len(relationships),
+	h.Logger().Info("LLM analysis storage completed (taxonomy-compliant)",
+		"hosts_updated", len(nodeIDs),
+		"method", "properties on host nodes",
 	)
 
 	return []runner.TestResult{
 		runner.NewPassResult(testName, reqID, runner.CategorySDK, duration,
-			fmt.Sprintf("Stored %d host analyses in graph and memory", len(analyses))),
+			fmt.Sprintf("Updated %d host nodes with LLM analysis properties", len(analyses))),
 	}
 }
 
@@ -1015,6 +1034,8 @@ func truncateString(s string, maxLen int) string {
 // ============================================================================
 
 // buildHostAnalysisPrompt creates an LLM prompt for analyzing a single host
+// The prompt asks for natural language analysis - structured output is handled by the provider
+// IMPORTANT: Includes TaxonomyPrompt() to give LLM context about valid node types and properties
 func buildHostAnalysisPrompt(host HostResult) string {
 	const promptTemplate = `You are a network security analyst. Analyze this host and determine what it likely does.
 
@@ -1028,22 +1049,12 @@ func buildHostAnalysisPrompt(host HostResult) string {
 - Port {{.Port}}/{{.Protocol}}: {{.Service}}{{if .Version}} (version: {{.Version}}){{end}}{{if .Product}} [{{.Product}}]{{end}}
 {{end}}
 
-## Analysis Required
-Based on the open ports and services, determine:
-1. What is the primary PURPOSE of this machine? (e.g., "Web Server", "Database Server", "Domain Controller", "File Server", "Development Machine")
-2. What OPERATING SYSTEM is it likely running? (e.g., "Linux/Ubuntu", "Windows Server 2019", "macOS")
-3. What is the RISK LEVEL? (low, medium, high, critical)
-4. What VULNERABILITIES might exist based on the services?
-5. What are your RECOMMENDATIONS for securing this host?
-
-Respond in JSON format:
-{
-  "purpose": "...",
-  "operating_system": "...",
-  "risk_level": "low|medium|high|critical",
-  "vulnerabilities": ["...", "..."],
-  "recommendations": ["...", "..."]
-}`
+Based on the open ports and services, provide a security analysis covering:
+- What this machine likely does (web server, database, domain controller, etc.)
+- What operating system it's probably running based on service fingerprints
+- The overall security risk level (low, medium, high, or critical)
+- Potential security vulnerabilities based on exposed services
+- Specific recommendations for hardening this host`
 
 	tmpl, err := template.New("host").Parse(promptTemplate)
 	if err != nil {
@@ -1055,38 +1066,13 @@ Respond in JSON format:
 		return fmt.Sprintf("Analyze host %s with ports: %v", host.IP, host.Ports)
 	}
 
-	return buf.String()
-}
+	basePrompt := buf.String()
 
-// parseHostAnalysisResponse parses the LLM JSON response into HostAnalysis
-func parseHostAnalysisResponse(response, ip, hostname string) (*HostAnalysis, error) {
-	// Find JSON in response
-	jsonStart := -1
-	jsonEnd := -1
-	for i := 0; i < len(response); i++ {
-		if response[i] == '{' && jsonStart == -1 {
-			jsonStart = i
-		}
-		if response[i] == '}' {
-			jsonEnd = i + 1
-		}
-	}
-
-	if jsonStart == -1 || jsonEnd == -1 {
-		return nil, fmt.Errorf("no JSON found in response")
-	}
-
-	jsonStr := response[jsonStart:jsonEnd]
-
-	var analysis HostAnalysis
-	if err := json.Unmarshal([]byte(jsonStr), &analysis); err != nil {
-		return nil, fmt.Errorf("failed to parse JSON: %w", err)
-	}
-
-	analysis.IP = ip
-	analysis.Hostname = hostname
-
-	return &analysis, nil
+	// Prepend taxonomy context so LLM understands valid node types and properties
+	// This enables taxonomy-aware structured output in the future
+	taxonomyContext := graphrag.TaxonomyPrompt()
+	return fmt.Sprintf("# GraphRAG Taxonomy Context\n\n%s\n\n---\n\n# Security Analysis Task\n\n%s",
+		taxonomyContext, basePrompt)
 }
 
 // enumerateIPs generates all IP addresses from a CIDR range
