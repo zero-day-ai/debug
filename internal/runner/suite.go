@@ -12,9 +12,6 @@ type SuiteResult struct {
 	// EndTime is when the test suite finished execution
 	EndTime time.Time
 
-	// Mode indicates which execution mode was used
-	Mode string
-
 	// Results contains all test results from all modules
 	Results []TestResult
 
@@ -29,14 +26,13 @@ type SuiteResult struct {
 }
 
 // NewSuiteResult creates a new SuiteResult
-func NewSuiteResult(mode string) *SuiteResult {
+func NewSuiteResult() *SuiteResult {
 	return &SuiteResult{
-		StartTime:     time.Now(),
-		Mode:          mode,
-		Results:       []TestResult{},
-		SDKSummary:    CategorySummary{},
+		StartTime:        time.Now(),
+		Results:          []TestResult{},
+		SDKSummary:       CategorySummary{},
 		FrameworkSummary: CategorySummary{},
-		OverallStatus: TestStatusPass,
+		OverallStatus:    TestStatusPass,
 	}
 }
 

@@ -8,10 +8,8 @@ import (
 	"time"
 
 	sdk "github.com/zero-day-ai/sdk"
-	"github.com/zero-day-ai/sdk/agent"
 	"github.com/zero-day-ai/sdk/llm"
 	"github.com/zero-day-ai/sdk/serve"
-	"github.com/zero-day-ai/sdk/types"
 )
 
 const (
@@ -34,36 +32,36 @@ func main() {
 
 		// Target types - supports all types for testing
 		sdk.WithTargetTypes(
-			types.TargetTypeLLMChat,
-			types.TargetTypeLLMAPI,
-			types.TargetTypeRAG,
-			types.TargetTypeAgent,
-			types.TargetTypeCopilot,
+			"llm_chat",
+			"llm_api",
+			"rag",
+			"agent",
+			"copilot",
 		),
 
 		// Technique types
 		sdk.WithTechniqueTypes(
-			types.TechniquePromptInjection,
-			types.TechniqueJailbreak,
-			types.TechniqueDataExtraction,
-			types.TechniqueModelManipulation,
-			types.TechniqueDOS,
+			"prompt_injection",
+			"jailbreak",
+			"data_extraction",
+			"model_manipulation",
+			"dos",
 		),
 
 		// Agent capabilities
 		sdk.WithCapabilities(
-			agent.CapabilityPromptInjection,
-			agent.CapabilityJailbreak,
-			agent.CapabilityDataExtraction,
-			agent.CapabilityModelManipulation,
-			agent.CapabilityDOS,
+			"prompt_injection",
+			"jailbreak",
+			"data_extraction",
+			"model_manipulation",
+			"dos",
 		),
 
 		// LLM Slot - minimal requirements for debug agent
 		sdk.WithLLMSlot("primary", llm.SlotRequirements{
 			MinContextWindow: 8000,
 			RequiredFeatures: []string{},
-			PreferredModels:  []string{"claude-3-haiku", "gpt-4o-mini"},
+			PreferredModels:  []string{"claude-sonnet-4-5-20250929", "gpt-4o-mini"},
 		}),
 
 		// Execution function

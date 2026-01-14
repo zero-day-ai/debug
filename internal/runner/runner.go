@@ -33,21 +33,19 @@ type TestModule interface {
 
 // Runner orchestrates test module execution
 type Runner struct {
-	modules  []TestModule
-	harness  agent.Harness
-	logger   *slog.Logger
-	mode     string
-	timeout  time.Duration
+	modules     []TestModule
+	harness     agent.Harness
+	logger      *slog.Logger
+	timeout     time.Duration
 	testTimeout time.Duration
 }
 
 // NewRunner creates a new test runner
-func NewRunner(harness agent.Harness, mode string, timeout, testTimeout time.Duration) *Runner {
+func NewRunner(harness agent.Harness, timeout, testTimeout time.Duration) *Runner {
 	return &Runner{
 		modules:     []TestModule{},
 		harness:     harness,
 		logger:      harness.Logger(),
-		mode:        mode,
 		timeout:     timeout,
 		testTimeout: testTimeout,
 	}
@@ -66,12 +64,11 @@ func (r *Runner) RegisterModules(modules ...TestModule) {
 // Run executes all registered test modules and returns aggregated results
 func (r *Runner) Run(ctx context.Context) (*SuiteResult, error) {
 	r.logger.Info("Starting test suite execution",
-		"mode", r.mode,
 		"modules", len(r.modules),
 		"timeout", r.timeout,
 	)
 
-	suite := NewSuiteResult(r.mode)
+	suite := NewSuiteResult()
 
 	// Create a context with timeout for the entire suite
 	suiteCtx, cancel := context.WithTimeout(ctx, r.timeout)
@@ -119,7 +116,7 @@ func (r *Runner) RunCategory(ctx context.Context, category Category) (*SuiteResu
 		"timeout", r.timeout,
 	)
 
-	suite := NewSuiteResult(fmt.Sprintf("%s-%s", r.mode, category))
+	suite := NewSuiteResult()
 
 	// Create a context with timeout
 	categoryCtx, cancel := context.WithTimeout(ctx, r.timeout)
