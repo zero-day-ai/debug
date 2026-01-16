@@ -1,8 +1,10 @@
 # Gibson Debug Agent - Implementation Status
 
 **Status**: ✅ COMPLETE
-**Version**: 1.0.0
-**Date**: 2026-01-08
+**Version**: 1.1.0
+**Date**: 2026-01-14
+
+> **Note:** Version 1.1.0 removed execution modes. The agent now always runs the full test suite.
 
 ## Project Overview
 

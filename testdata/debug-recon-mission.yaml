@@ -1,0 +1,222 @@
+name: debug-network-recon
+description: |
+  Comprehensive local network reconnaissance with LLM intelligence
+
+  This mission performs a full reconnaissance of the local network:
+  - Discovers local subnet and scans for live hosts
+  - Probes HTTP endpoints for technology detection
+  - Scans for vulnerabilities using nuclei
+  - Enumerates domains from /etc/hosts mappings
+  - Generates LLM-powered intelligence analysis
+
+  The debug agent orchestrates nmap, masscan, httpx, nuclei, subfinder,
+  and amass tools, extracting entities via embedded GraphRAG taxonomy
+  and generating intelligence nodes that link back to discovered entities.
+
+version: "1.0"
+
+# LLM Configuration - Using Claude for intelligence generation
+config:
+  llm:
+    default_provider: anthropic
+    default_model: claude-opus-4-5-20251101
+
+  # Budget controls for local network scan
+  budget:
+    max_tokens: 100000        # 100K token budget
+    max_cost_usd: 10.00       # $10 max spend
+    warn_threshold_pct: 80    # Warn at 80% budget
+
+  # Observability
+  observability:
+    tracing: true
+    metrics: true
+    langfuse: true
+    verbose: false
+
+# Target specification - will be auto-discovered by debug agent
+target:
+  seeds:
+    - value: "local-network"
+      type: network
+      scope: in_scope
+
+# Workflow DAG - Five-phase reconnaissance
+nodes:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PHASE 1: DISCOVER
+  # Network discovery and host scanning with nmap/masscan
+  # ═══════════════════════════════════════════════════════════════════════════
+  - id: discover
+    type: agent
+    name: "Network Discovery"
+    description: |
+      Discovers local subnet using network interface inspection.
+      Scans for live hosts with open ports using nmap and masscan.
+      Populates knowledge graph with host and port nodes.
+    agent: debug-agent
+    timeout: 5m
+    retry:
+      max_retries: 1
+      backoff: constant
+      initial_delay: 10s
+    task:
+      goal: |
+        Discover local subnet and scan for live hosts with open ports.
+        1. Auto-detect local network CIDR from network interfaces
+        2. Run nmap for host discovery and service detection
+        3. Run masscan for fast port scanning
+        4. Extract host and port nodes to knowledge graph
+      context:
+        mode: network-recon-discover
+        demo_mode: false
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PHASE 2: PROBE
+  # HTTP endpoint probing and technology detection with httpx
+  # ═══════════════════════════════════════════════════════════════════════════
+  - id: probe
+    type: agent
+    name: "HTTP Endpoint Probing"
+    description: |
+      Probes discovered HTTP endpoints for technology detection.
+      Identifies web servers, frameworks, and technologies.
+      Populates knowledge graph with endpoint and technology nodes.
+    agent: debug-agent
+    depends_on:
+      - discover
+    timeout: 5m
+    retry:
+      max_retries: 1
+      backoff: constant
+      initial_delay: 10s
+    task:
+      goal: |
+        Probe discovered HTTP endpoints for technology detection.
+        1. Query knowledge graph for discovered ports (80, 443, 8080, etc.)
+        2. Run httpx for HTTP probing and technology fingerprinting
+        3. Extract endpoint and technology nodes to knowledge graph
+      context:
+        mode: network-recon-probe
+        demo_mode: false
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PHASE 3: SCAN
+  # Vulnerability scanning with nuclei
+  # ═══════════════════════════════════════════════════════════════════════════
+  - id: scan
+    type: agent
+    name: "Vulnerability Scanning"
+    description: |
+      Scans discovered endpoints for vulnerabilities using nuclei.
+      Runs nuclei templates against HTTP endpoints.
+      Populates knowledge graph with finding nodes.
+    agent: debug-agent
+    depends_on:
+      - probe
+    timeout: 10m
+    retry:
+      max_retries: 1
+      backoff: constant
+      initial_delay: 15s
+    task:
+      goal: |
+        Scan discovered endpoints for vulnerabilities.
+        1. Query knowledge graph for discovered HTTP endpoints
+        2. Run nuclei with appropriate template tags
+        3. Extract finding nodes to knowledge graph
+      context:
+        mode: network-recon-scan
+        demo_mode: false
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PHASE 4: DOMAIN
+  # Domain enumeration with subfinder and amass (parallel with probe/scan)
+  # ═══════════════════════════════════════════════════════════════════════════
+  - id: domain
+    type: agent
+    name: "Domain Enumeration"
+    description: |
+      Enumerates domains from /etc/hosts mappings.
+      Discovers subdomains using subfinder and amass.
+      Populates knowledge graph with domain and subdomain nodes.
+    agent: debug-agent
+    depends_on:
+      - discover
+    timeout: 10m
+    retry:
+      max_retries: 1
+      backoff: constant
+      initial_delay: 15s
+    task:
+      goal: |
+        Enumerate domains from /etc/hosts mappings.
+        1. Parse /etc/hosts for hostname->IP mappings
+        2. Extract unique domain suffixes
+        3. Run subfinder for subdomain discovery
+        4. Run amass for additional subdomain enumeration
+        5. Extract domain and subdomain nodes to knowledge graph
+      context:
+        mode: network-recon-domain
+        demo_mode: false
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PHASE 5: ANALYZE
+  # LLM intelligence generation - analyzes all discovered data
+  # ═══════════════════════════════════════════════════════════════════════════
+  - id: analyze
+    type: agent
+    name: "Intelligence Analysis"
+    description: |
+      Generates LLM-powered intelligence from all discovered data.
+      Queries knowledge graph for hosts, ports, endpoints, findings.
+      Creates intelligence nodes with risk assessment and attack paths.
+      Links intelligence nodes back to analyzed entities via ANALYZES relationships.
+    agent: debug-agent
+    depends_on:
+      - discover
+      - probe
+      - scan
+      - domain
+    timeout: 5m
+    retry:
+      max_retries: 2
+      backoff: exponential
+      initial_delay: 10s
+      max_delay: 1m
+      multiplier: 2.0
+    task:
+      goal: |
+        Generate LLM intelligence from all discovered data.
+        1. Query knowledge graph for all hosts, ports, endpoints, findings
+        2. Generate phase-specific intelligence for each recon phase
+        3. Generate overall mission intelligence summary
+        4. Create intelligence nodes with:
+           - Executive summary of findings
+           - Risk assessment narrative
+           - Identified attack paths
+           - Remediation recommendations
+        5. Link intelligence nodes to analyzed entities via ANALYZES relationships
+      context:
+        mode: network-recon-analyze
+        demo_mode: false
+        generate_intelligence: true
+        intelligence_model: claude-opus-4-5-20251101
+
+# Mission bounds - reasonable limits for local network scan
+bounds:
+  max_duration: 15m         # 15 minutes total
+  max_tokens: 100000        # 100K tokens
+  max_tool_calls: 50        # Max 50 tool executions
+  max_llm_calls: 20         # Max 20 LLM calls
+
+# Mission metadata
+metadata:
+  created_by: "Debug Agent"
+  purpose: "Local network reconnaissance with LLM intelligence"
+  classification: "INTERNAL"
+  tags:
+    - network-recon
+    - debug-agent
+    - local-network
+    - intelligence
